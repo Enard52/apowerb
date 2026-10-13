@@ -145,6 +145,8 @@ def inject_bi_dashboard_tools(
         "bi_dashboard_tools.tool_bi_import_attachment",
         "bi_dashboard_tools.tool_bi_create_dashboard",
         "bi_dashboard_tools.tool_bi_create_stock_dashboard",
+        "bi_dashboard_tools.tool_bi_list_dashboard_templates",
+        "bi_dashboard_tools.tool_bi_create_dashboard_from_template",
         "bi_dashboard_tools.tool_bi_patch_dashboard",
         "bi_dashboard_tools.tool_bi_query_dashboard",
         "bi_dashboard_tools.tool_bi_describe_dashboard",

@@ -201,6 +201,32 @@ def test_create_stock_dashboard_with_real_stock(env):
     assert plan.target_cover == 4 and plan.horizon == 8
 
 
+def test_create_stock_dashboard_records_the_template_provenance(env):
+    res = t.tool_bi_create_stock_dashboard("ds-9", site="site", horizon=12)
+    ref = env.db.rows[res["dashboard_id"]][1].template
+    assert ref.model_dump() == {
+        "id": "stock_pilotage",
+        "version": 1,
+        "columns": {"date": "semaine", "family": "famille", "sales": "ventes", "site": "site",
+                    "stock": None, "safety": None, "lead_time": None},
+        "params": {"horizon": 12},
+    }
+
+
+def test_create_stock_dashboard_with_real_stock_records_the_stock_columns(env):
+    res = t.tool_bi_create_stock_dashboard(
+        "ds-9", stock="stock", safety_column="seuil_securite", lead_time_column="delai_fournisseur_sem"
+    )
+    columns = env.db.rows[res["dashboard_id"]][1].template.columns
+    assert (columns["stock"], columns["safety"], columns["lead_time"], columns["site"]) == (
+        "stock", "seuil_securite", "delai_fournisseur_sem", None,
+    )
+
+
+def test_free_form_dashboard_has_no_template_provenance(env):
+    assert env.db.rows[_create()["dashboard_id"]][1].template is None
+
+
 def test_create_stock_dashboard_bad_column(env):
     res = t.tool_bi_create_stock_dashboard("ds-9", date="Semaine")
     assert res["success"] is False and "not a valid column name" in res["error"]
@@ -306,3 +332,53 @@ def test_tools_are_discovered_and_registered():
 
     for tpl in (DASHBOARD_TEMPLATES[0], DATA_TEMPLATES[0]):
         assert {f"bi_dashboard_tools.{n}" for n in names} <= set(tpl["recommended_tools"])
+
+
+def test_list_dashboard_templates_shows_otif_and_quality_with_their_columns():
+    res = t.tool_bi_list_dashboard_templates()
+    assert res["success"] is True
+    by_id = {tpl["id"]: tpl for tpl in res["templates"]}
+    assert {"stock_pilotage", "delivery_otif", "production_quality"} <= set(by_id)
+    assert any(c["required"] for c in by_id["delivery_otif"]["columns"])
+
+
+@pytest.mark.parametrize(
+    "template_id",
+    [
+        "delivery_otif",
+        "production_quality",
+        "sales_tracking",
+        "sales_forecast",
+        "receivables_aging",
+        "purchasing_suppliers",
+        "support_sla",
+    ],
+)
+def test_create_dashboard_from_template_with_renamed_columns(env, template_id):
+    from apowerb.bi.spec.catalog import get_template
+
+    template = get_template(template_id)
+    columns = {c.key: f"col_{c.key}" for c in template.columns if c.required}
+    res = t.tool_bi_create_dashboard_from_template(template_id, "ds-7", columns_json=json.dumps(columns))
+    assert res["success"] is True, res
+    dash = env.db.rows[res["dashboard_id"]][1]
+    assert dash.title == template.label
+    assert dash.sources[0].dataset_id == "ds-7"
+    assert dash.template.id == template_id and dash.template.version == template.version
+    assert {k: v for k, v in dash.template.columns.items() if v} == columns
+
+
+def test_create_dashboard_from_template_uses_default_columns(env):
+    res = t.tool_bi_create_dashboard_from_template("delivery_otif", "ds-7", title="OTIF Nord")
+    assert res["success"] is True, res
+    assert env.db.rows[res["dashboard_id"]][1].title == "OTIF Nord"
+
+
+def test_create_dashboard_from_template_rejects_unknown_template_and_columns(env):
+    res = t.tool_bi_create_dashboard_from_template("nope", "ds-7")
+    assert res["success"] is False and "delivery_otif" in res["error"]
+    res = t.tool_bi_create_dashboard_from_template("delivery_otif", "ds-7", columns_json='{"zzz": "a"}')
+    assert res["success"] is False and "zzz" in res["error"]
+    res = t.tool_bi_create_dashboard_from_template("delivery_otif", "ds-7", columns_json="[1]")
+    assert res["success"] is False
+    assert env.db.rows == {}

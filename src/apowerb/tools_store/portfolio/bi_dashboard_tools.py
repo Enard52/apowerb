@@ -258,9 +258,18 @@ async def _preview(dashboard, owner: str, filters: dict | None = None, *, detail
     return result
 
 
+_NAME_CONSTRAINT = "uq_bi_name_type_org_project"
+
+
 def _is_duplicate(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return "unique" in msg or "duplicate key" in msg or "already exists" in msg
+    """Whether ``exc`` is a dashboard-name conflict (and nothing else)."""
+    from sqlalchemy.exc import IntegrityError
+
+    from apowerb.bi.dashboards.service import DashboardNameConflictError
+
+    if isinstance(exc, DashboardNameConflictError):
+        return True
+    return isinstance(exc, IntegrityError) and _NAME_CONSTRAINT in str(exc.orig)
 
 
 # ---------------------------------------------------------------------------
@@ -268,10 +277,14 @@ def _is_duplicate(exc: Exception) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def _async_create(title: str, description: str, spec: dict, owner: str) -> dict:
+async def _async_create(title: str, description: str, spec: dict, owner: str, template: dict | None = None) -> dict:
     dashboard, error = _build_dashboard(title, description, spec, owner)
     if error:
         return {"success": False, "error": error}
+    if template is not None:
+        from apowerb.bi.dashboards.core import TemplateRef
+
+        dashboard = dashboard.model_copy(update={"template": TemplateRef.model_validate(template)})
     issues = _validate(dashboard)
     if issues:
         return {
@@ -300,9 +313,9 @@ async def _async_create(title: str, description: str, spec: dict, owner: str) ->
         " (copy this relative path exactly as written; never add a domain in front of it)."
     )
     if renamed:
-        message += (
-            f" A dashboard named '{requested}' already existed, so this one is named"
-            f" '{dashboard.title}': tell the user."
+        message = (
+            f"Le nom « {requested} » était déjà pris : le tableau s'appelle « {dashboard.title} ». "
+            f"Tell the user. {message}"
         )
     if preview["errors"]:
         message += " Some components have errors: see 'errors'."
@@ -498,14 +511,14 @@ def _fail(tool: str, exc: Exception, title: str = "") -> dict:
     return {"success": False, "error": str(exc)}
 
 
-def _create(title: str, description: str, spec: dict, tool: str) -> dict:
+def _create(title: str, description: str, spec: dict, tool: str, template: dict | None = None) -> dict:
     owner = _agent_owner()
     if not owner:
         return {"success": False, "error": "No owner context."}
     if not (title or "").strip():
         return {"success": False, "error": "title is required."}
     try:
-        return _run_tool(_async_create(title.strip(), description, spec, owner))
+        return _run_tool(_async_create(title.strip(), description, spec, owner, template))
     except Exception as exc:
         return _fail(tool, exc, title)
 
@@ -575,6 +588,10 @@ def tool_bi_create_dashboard(
     charts or a computed text. For a stock/inventory dashboard prefer
     tool_bi_create_stock_dashboard. To change an existing one use
     tool_bi_describe_dashboard then tool_bi_patch_dashboard.
+
+    If the title is already taken the dashboard is renamed "Title (2)", "Title (3)"...
+    and the result carries "renamed_from"; its "message" then starts with the
+    sentence for the user: tell them the final title in your answer.
 
     The dashboard OWNS its data: sources point at a dataset (see
     bi_datasets.tool_list_datasets / tool_describe_dataset), measures are SQL
@@ -688,6 +705,7 @@ def tool_bi_create_stock_dashboard(
     Returns the dashboard id, url (/bi/<id>), computed KPIs and the text
     summary, and an "errors" map for components that failed.
     """
+    from apowerb.bi.spec.catalog import STOCK_PILOTAGE_VERSION
     from apowerb.bi.spec.templates import stock_pilotage
 
     if not (dataset_id or "").strip():
@@ -718,7 +736,88 @@ def tool_bi_create_stock_dashboard(
         )
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
-    return _create(title or "Pilotage stocks", "", spec, "tool_bi_create_stock_dashboard")
+    provenance = {
+        "id": "stock_pilotage",
+        "version": STOCK_PILOTAGE_VERSION,
+        "columns": {
+            "date": date,
+            "family": family,
+            "sales": sales,
+            "site": site.strip() or None,
+            "stock": stock.strip() or None,
+            "safety": safety_column.strip() or None,
+            "lead_time": lead_time_column.strip() or None,
+        },
+        "params": {"horizon": horizon},
+    }
+    return _create(title or "Pilotage stocks", "", spec, "tool_bi_create_stock_dashboard", provenance)
+
+
+def tool_bi_list_dashboard_templates() -> dict:
+    """Lists the ready-made dashboard templates (stock steering, delivery OTIF, production quality...).
+
+    Each template gives its id, what it shows, the columns it expects (key,
+    label, type, required, default column name) and its parameters. Use it
+    before tool_bi_create_dashboard_from_template to pick the template that
+    fits the user's need and map the dataset columns.
+
+    Returns {"success": True, "templates": [...]}.
+    """
+    from apowerb.bi.spec.catalog import list_templates
+
+    return {"success": True, "templates": [tpl.describe() for tpl in list_templates()]}
+
+
+def tool_bi_create_dashboard_from_template(
+    template_id: str,
+    dataset_id: str,
+    title: str = "",
+    columns_json: str = "{}",
+    params_json: str = "{}",
+) -> dict:
+    """Creates a complete dashboard from a ready-made template on one dataset.
+
+    Use it when the user's need matches a template listed by
+    tool_bi_list_dashboard_templates (for example delivery_otif for on-time
+    in-full deliveries, production_quality for scrap and defect rates). Call
+    bi_datasets.tool_describe_dataset first and map each template column key
+    to the dataset column that holds it; columns left out use the template
+    default name. The dashboard remembers its template so the user can later
+    update it or replace its file from the UI.
+
+    Args:
+        template_id:  Template id from tool_bi_list_dashboard_templates.
+        dataset_id:   Dataset id (UUID).
+        title:        Dashboard title. Empty: the template label.
+        columns_json: JSON object {template column key: dataset column name}.
+        params_json:  JSON object {parameter key: value}; empty uses defaults.
+
+    Returns the dashboard id, url (/bi/<id>), computed KPIs and an "errors"
+    map for components that failed to compute.
+    """
+    from apowerb.bi.spec.catalog import get_template, list_templates
+
+    template = get_template((template_id or "").strip())
+    if template is None:
+        known = ", ".join(tpl.id for tpl in list_templates())
+        return {"success": False, "error": f"Unknown template '{template_id}'. Available: {known}."}
+    mapping, error = _loads(columns_json or "{}", "columns_json", dict)
+    if error:
+        return {"success": False, "error": error}
+    raw_params, error = _loads(params_json or "{}", "params_json", dict)
+    if error:
+        return {"success": False, "error": error}
+    given = {k: v for k, v in mapping.items() if v}
+    columns, column_errors = template.clean_columns({**{c.key: c.default for c in template.columns}, **given})
+    params, param_errors = template.clean_params(raw_params)
+    if column_errors or param_errors:
+        return {"success": False, "error": " ".join(column_errors + param_errors)}
+    try:
+        spec = template.build(dataset_id.strip(), columns, params)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    provenance = {"id": template.id, "version": template.version, "columns": columns, "params": params}
+    return _create(title or template.label, "", spec, "tool_bi_create_dashboard_from_template", provenance)
 
 
 def tool_bi_patch_dashboard(dashboard_id: str, ops_json: str, dry_run: bool = False) -> dict:
