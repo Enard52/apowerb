@@ -267,7 +267,7 @@ def _guard(add, check, value: str, what: str) -> None:  # type: ignore[no-untype
         add(str(exc))
 
 
-_CONNECTOR_TYPES = ("database", "csv", "google_drive", "onedrive_excel", "agent")
+_CONNECTOR_TYPES = ("database", "csv", "google_drive", "onedrive_excel", "agent", "tool")
 
 
 def _validate_connector(s: SourceSpec, label: str, add) -> None:  # type: ignore[no-untyped-def]
@@ -291,6 +291,27 @@ def _validate_connector(s: SourceSpec, label: str, add) -> None:  # type: ignore
         add(f"{label} : fichier OneDrive manquant (source_options.item_id ou item_path).")
     elif st == "agent" and not opts.get("agent_ids"):
         add(f"{label} : agent manquant (source_options.agent_ids).")
+    elif st == "tool":
+        _validate_tool(s, label, add)
+
+
+def _validate_tool(s: SourceSpec, label: str, add) -> None:  # type: ignore[no-untyped-def]
+    from apowerb.tools_store import bi_source
+
+    opts = s.source_options
+    tool = opts.get("tool")
+    if not isinstance(tool, str) or not tool.strip():
+        add(f"{label} : outil manquant (source_options.tool).")
+        return
+    if not isinstance(opts.get("args", {}), dict):
+        add(f"{label} : source_options.args doit être un objet.")
+    try:
+        fn = bi_source.resolve_bi_source(tool.strip())
+    except bi_source.BiSourceError as exc:
+        add(f"{label} : {exc}")
+        return
+    if bi_source.credentials_of(fn) == "tool_config" and not s.connection_config_id:
+        add(f"{label} : connection_config_id manquant (connexion de l'outil).")
 
 
 def _validate_visual(

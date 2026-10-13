@@ -14,6 +14,7 @@ from typing import Any, Optional
 import httpx
 
 from apowerb.helpers.encryptor import decrypt_value
+from apowerb.tools_store.bi_source import bi_source
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,44 @@ def tool_odoo_search_records(
     except Exception as exc:
         logger.warning("[odoo] search_read %s failed: %s", model, exc)
         return {"success": False, "error": str(exc)}
+
+
+def _table_cell(value: Any) -> Any:
+    """Odoo many2one ``[id, "name"]`` → its name; other lists are kept as they are."""
+    if isinstance(value, (list, tuple)) and len(value) == 2 and isinstance(value[0], int) and isinstance(value[1], str):
+        return value[1]
+    return value
+
+
+@bi_source(credentials="integration")
+def tool_odoo_search_table(
+    model: str,
+    fields: list,
+    domain: Optional[list] = None,
+    limit: int = 500,
+    order: Optional[str] = None,
+) -> dict:
+    """Read Odoo records as a table (read-only; also a BI dashboard data source).
+
+    Args:
+        model:  Odoo model name, e.g. "sale.order", "crm.lead", "account.move".
+        fields: Field names to return as columns (required, so columns are stable).
+        domain: Odoo domain, e.g. ``[["state", "=", "sale"]]``. Empty = all records.
+        limit:  Max records (1-500). Default 500.
+        order:  SQL-like ordering, e.g. "date_order desc".
+
+    Returns:
+        {"success": True, "columns": [...], "rows": [{field: value}, ...]} (many2one
+        fields are given as the related record's name), or
+        {"success": False, "error": "..."}.
+    """
+    if not fields:
+        return {"success": False, "error": "`fields` is required (list of the columns to read)."}
+    result = tool_odoo_search_records(model, domain=domain, fields=list(fields), limit=limit, order=order)
+    if not result.get("success"):
+        return {"success": False, "error": result.get("error") or "Odoo read failed"}
+    rows = [{k: _table_cell(v) for k, v in rec.items()} for rec in result.get("records") or []]
+    return {"success": True, "columns": ["id", *[f for f in fields if f != "id"]], "rows": rows}
 
 
 def tool_odoo_read_records(
