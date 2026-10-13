@@ -30,6 +30,8 @@ import os
 from logging import getLogger
 from typing import Any
 
+from apowerb.tools_store.bi_source import bi_source
+
 logger = getLogger(__name__)
 
 # Read at module level so the ToolsStore scanner (regex on os.getenv) discovers
@@ -253,3 +255,50 @@ def tool_hubspot_search_contacts(
         "total": data.get("total"),
         "results": results,
     }
+
+
+_DEALS_PAGE = 100  # HubSpot's documented per-page maximum for list endpoints.
+_DEALS_MAX = 5000
+_DEALS_DEFAULT_PROPERTIES = ("dealname", "amount", "dealstage", "pipeline", "closedate", "createdate")
+
+
+def _flat_object(obj: dict) -> dict:
+    """``{"id", "properties": {...}}`` → one flat row."""
+    return {"id": obj.get("id"), **(obj.get("properties") or {})}
+
+
+@bi_source
+def tool_hubspot_list_deals(properties: list[str] | None = None, limit: int = 100) -> dict:
+    """List HubSpot deals as a table (read-only; also a BI dashboard data source).
+
+    Args:
+        properties (list[str]): Deal properties to return as columns. Default:
+            dealname, amount, dealstage, pipeline, closedate, createdate.
+        limit (int): Maximum number of deals (1-5000). Default: 100.
+
+    Returns:
+        dict: ``{"success": True, "columns": [...], "rows": [...]}`` (one row per
+        deal, ``id`` first), or ``{"success": False, "error": "..."}``.
+    """
+    from urllib.parse import quote
+
+    props = [p for p in (properties or _DEALS_DEFAULT_PROPERTIES) if isinstance(p, str) and p.strip()]
+    wanted = max(1, min(int(limit or 100), _DEALS_MAX))
+    rows: list[dict] = []
+    after: str | None = None
+    try:
+        while len(rows) < wanted:
+            path = (
+                f"/crm/v3/objects/deals?limit={min(_DEALS_PAGE, wanted - len(rows))}"
+                f"&properties={quote(','.join(props), safe=',')}"
+            )
+            if after:
+                path += f"&after={quote(after, safe='')}"
+            data = _request("GET", path)
+            rows.extend(_flat_object(o) for o in data.get("results") or [])
+            after = ((data.get("paging") or {}).get("next") or {}).get("after")
+            if not after:
+                break
+    except Exception as exc:  # noqa: BLE001 — mapped to a structured error dict
+        return {"success": False, "error": _error_result(exc)["error_message"]}
+    return {"success": True, "columns": ["id", *props], "rows": rows[:wanted]}

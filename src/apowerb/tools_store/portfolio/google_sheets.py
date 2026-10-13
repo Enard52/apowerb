@@ -16,6 +16,7 @@ from logging import getLogger
 
 import httpx
 
+from apowerb.tools_store.bi_source import bi_source
 from apowerb.tools_store.portfolio.google_auth import google_auth_headers
 from apowerb.tools_store.portfolio.integration_status import IntegrationStatusError
 
@@ -58,6 +59,47 @@ def tool_read_sheet(spreadsheet_id: str, range: str = "Sheet1") -> dict:
     except Exception as exc:
         logger.exception("tool_read_sheet failed")
         return {"status": "error", "message": str(exc), "retry": False}
+
+
+def _table_from_values(values: list) -> tuple[list[str], list[dict]]:
+    """First row = header; blank/duplicate headers are made unique; short rows are padded."""
+    if not values:
+        return [], []
+    columns: list[str] = []
+    for i, raw in enumerate(values[0]):
+        name = str(raw).strip() or f"colonne_{i + 1}"
+        base, n = name, 2
+        while name in columns:
+            name, n = f"{base}_{n}", n + 1
+        columns.append(name)
+    rows = []
+    for line in values[1:]:
+        cells = list(line) + [None] * (len(columns) - len(line))
+        rows.append({col: (None if cells[i] == "" else cells[i]) for i, col in enumerate(columns)})
+    return columns, rows
+
+
+@bi_source(credentials="integration")
+def tool_read_sheet_table(spreadsheet_id: str, range: str = "Sheet1") -> dict:
+    """Read a Google Sheets range as a table (first row = column names).
+
+    Read-only; also usable as a BI dashboard data source.
+
+    Args:
+        spreadsheet_id: The ID of the spreadsheet (from the URL).
+        range: A1 notation range (e.g. 'Sheet1', 'Ventes!A1:F500'). The first
+            row must hold the column names. Defaults to 'Sheet1'.
+
+    Returns:
+        {"success": True, "columns": [...], "rows": [{column: value}, ...]},
+        or {"success": False, "error": "..."} on failure.
+    """
+    result = tool_read_sheet(spreadsheet_id, range)
+    if result.get("status") != "ok":
+        message = result.get("message") or result.get("error") or "lecture de la feuille impossible"
+        return {"success": False, "error": str(message)}
+    columns, rows = _table_from_values(result.get("values") or [])
+    return {"success": True, "columns": columns, "rows": rows}
 
 
 def tool_write_cells(spreadsheet_id: str, range: str, values: str) -> dict:

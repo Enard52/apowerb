@@ -10,7 +10,9 @@ Loading of the raw rows behind a :class:`SourceSpec`.
 - ``kind=sql`` → ``DatabaseQueryExecutor`` (SELECT only, its own validation),
   scoped to the owner's tool_config.
 - ``kind=connector`` → the chart executor of its ``source_type`` (database,
-  Google Drive, OneDrive, agent), run as the owner.
+  Google Drive, OneDrive, agent), run as the owner. ``source_type="tool"``
+  runs an allowlisted, read-only agent tool as the owner
+  (``bi/data/tool_executor.py``, contract in ``tools_store/bi_source.py``).
 
 Both return a DataFrame with normalised column names and inferred dtypes.
 """
@@ -111,8 +113,33 @@ def _connector_session() -> AsyncContextManager[Any]:
     return _open_session()
 
 
+async def load_tool(spec: SourceSpec, owner: str) -> pd.DataFrame:
+    """Rows returned by an allowlisted agent tool, run as the dashboard owner."""
+    from apowerb.bi.data.tool_executor import ToolQueryExecutor, ToolSourceError
+
+    label = f"Source « {spec.name} »"
+    opts = spec.source_options
+    tool, args = opts.get("tool"), opts.get("args") or {}
+    if not isinstance(tool, str) or not tool.strip():
+        raise SpecError(f"{label} : outil manquant (source_options.tool).")
+    if not isinstance(args, dict):
+        raise SpecError(f"{label} : source_options.args doit être un objet.")
+    executor = ToolQueryExecutor(owner, spec.connection_config_id, max_rows=MAX_SOURCE_ROWS)
+    try:
+        rows = await executor.run(tool.strip(), args)
+    except ToolSourceError as exc:
+        raise SpecError(f"{label} : {exc}") from None
+    except Exception as exc:  # noqa: BLE001 - tool errors are logged, not shown
+        logger.warning("[BiSpec] tool source %s failed: %s", spec.name, type(exc).__name__)
+        raise SpecError(f"{label} : la lecture a échoué (voir les journaux du serveur).") from None
+    return coerce_frame(pd.DataFrame.from_records(rows))
+
+
 async def load_connector(spec: SourceSpec, owner: str) -> pd.DataFrame:
     """Rows of a ``connector`` source, read like a chart source but as the owner."""
+    if spec.source_type == "tool":
+        return await load_tool(spec, owner)
+
     from apowerb.bi.charts.core import DataSource, SourceType
     from apowerb.bi.data import service as data_service
 
