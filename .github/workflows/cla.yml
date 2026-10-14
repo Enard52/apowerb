@@ -51,7 +51,7 @@ jobs:
         with:
           path-to-signatures: 'signatures/cla.json'
           path-to-document: 'https://github.com/apowerb/apowerb/blob/main/CLA.md'
-          branch: 'main'
+          branch: 'cla-signatures'
           allowlist: 'dgnaglo,faridovski,bot*'
           custom-notsigned-prcomment: |
             Merci pour cette contribution.
