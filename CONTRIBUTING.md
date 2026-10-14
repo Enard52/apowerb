@@ -4,6 +4,24 @@ Thanks for taking the time. This file describes how this repository actually
 works — the conventions below were read off the history and the tooling, not
 invented for the occasion.
 
+## Ways to contribute
+
+You do not need to write code to be useful here.
+
+- **Report a bug.** A clear reproduction is worth more than a fix. Say what you
+  ran, what you expected, and what happened instead.
+- **Improve the docs.** If something tripped you up, it will trip up the next
+  person. The documentation lives in
+  [apowerb-docs](https://github.com/apowerb/apowerb-docs).
+- **Pick up a scoped issue.** Issues labelled
+  [`good first issue`](https://github.com/apowerb/apowerb/labels/good%20first%20issue)
+  are small and carry their context, file pointers and a "done when" list.
+  [`help wanted`](https://github.com/apowerb/apowerb/labels/help%20wanted) marks
+  the ones we most want taken. Comment on an issue before you start, so two
+  people do not build the same thing.
+- **Tell us what you built.** Deployed apowerb or built an agent on it? Post it in
+  [Discussions](https://github.com/apowerb/apowerb/discussions) under *Show and tell*.
+
 ## Licence and CLA
 
 Contributions are licensed under the [Apache License 2.0](./LICENSE), like the
@@ -33,6 +51,34 @@ first point above and neither of the other two.
 
 Note also that the licence covers the code and not the marks: see
 [TRADEMARK.md](./TRADEMARK.md) before naming a fork or reusing the logo.
+
+## How apowerb fits together
+
+Two things surprise people, so here they are first:
+
+- **Agents are data, not files.** An agent is a row in the database: its model,
+  instruction, tools and sub-agents. The core writes a small module per agent
+  (`root_agent = to_agent(...)`) so the ADK runtime can find it, but that file
+  holds no logic: `to_agent` resolves everything from the database at runtime
+  (`src/apowerb/core/adk_agent_builder.py`, `src/apowerb/core/agent_helpers/`).
+  To change how agents behave, you are usually in `core/`, not in a generated file.
+- **Models go through LiteLLM.** You rarely touch a provider SDK: a model string
+  (`DEFAULT_LLM_MODEL`, or the one set on an agent) is wrapped in ADK's `LiteLlm`,
+  so OpenAI, Anthropic, Mistral, Gemini or a local model behave the same.
+
+This repository is the backend: the FastAPI app, the agent runtime, tools,
+skills and the `apowerb` CLI, all under `src/apowerb/`. The rest of the stack
+lives in sibling repositories, and
+[apowerb-hosting](https://github.com/apowerb/apowerb-hosting) wires it together
+with Docker Compose and a Helm chart:
+
+| Component | Repository | In the default stack |
+|---|---|---|
+| Backend and agent runtime | this one | yes |
+| Web UI (Next.js) | [apowerb-ui](https://github.com/apowerb/apowerb-ui) | yes |
+| ETL and automation pipelines | [th2etl](https://github.com/apowerb/th2etl) | optional (`etl` profile) |
+| OpenTelemetry collection and observability | [th2pulse](https://github.com/apowerb/th2pulse) | optional (`pulse` / `logs` profiles) |
+| Time-series forecasting service | [th2forecast](https://github.com/apowerb/th2forecast) | optional (`forecast` profile) |
 
 ## Getting set up
 
@@ -139,6 +185,10 @@ repository. That exclusion is structural, not debt.
 Do not report vulnerabilities through issues or pull requests. See
 [SECURITY.md](./SECURITY.md) for the private disclosure path.
 
-## Questions
+## Getting unstuck
 
-Open an issue, or contact the thaink² team.
+- **Questions, ideas, "is this a bug?":** open a thread in
+  [Discussions](https://github.com/apowerb/apowerb/discussions).
+- **A concrete problem with the code:** open an issue.
+- Unsure about the test setup or an approach? Open a draft pull request and say
+  where you are stuck. A PR with a gap is easier to help with than no PR.
