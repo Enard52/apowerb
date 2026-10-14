@@ -148,3 +148,11 @@ def test_created_dashboard_says_its_components_are_not_charts(rows):
     for res in (_create(), t.tool_bi_create_stock_dashboard("ds-1")):
         assert "embed_chart" in res["message"]
         assert "not chart" in res["message"]
+
+
+def test_embed_chart_doc_separates_chart_ids_from_dashboard_component_ids():
+    from apowerb.core.agent_helpers.chat_action_tools import embed_chart
+
+    doc = embed_chart.__doc__
+    assert "tool_create_chart" in doc
+    assert "components[].id" in doc
